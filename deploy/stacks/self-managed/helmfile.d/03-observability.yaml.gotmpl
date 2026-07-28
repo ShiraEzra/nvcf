@@ -50,3 +50,13 @@ releases:
       - template: service
     # When enabled, this service will export realtime function information that can be
     # scraped by a Prometheus ServiceMonitor
+
+  # --- Function Autoscaler workload ---
+  - name: function-autoscaler
+    version: 0.1.0
+    namespace: nvcf
+    condition: functionAutoscaler.enabled
+    inherit:
+      - template: service
+    needs:
+      - nvcf/state-metrics

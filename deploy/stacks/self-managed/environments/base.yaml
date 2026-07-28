@@ -306,6 +306,13 @@ stateMetrics:
   serviceMonitor:
     enabled: false
 
+# Function Autoscaler workload. Enabled by default for self-hosted installs.
+# Add functionAutoscaler.* overrides only for external dependencies.
+functionAutoscaler:
+  enabled: true
+  image:
+    tag: "1.18.7"
+
 rateLimiter:
   enabled: true
   replicaCount: 1
