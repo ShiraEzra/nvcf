@@ -23,12 +23,66 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 )
+
+func TestSelfManagedOpenBaoWebhookFailsClosed(t *testing.T) {
+	const (
+		baseConfigPath   = "../../deploy/stacks/self-managed/environments/base.yaml"
+		globalValuesPath = "../../deploy/stacks/self-managed/global.yaml.gotmpl"
+	)
+
+	type matchExpression struct {
+		Key      string   `yaml:"key"`
+		Operator string   `yaml:"operator"`
+		Values   []string `yaml:"values"`
+	}
+	var config struct {
+		OpenBao struct {
+			Injector struct {
+				Webhook struct {
+					FailurePolicy     string `yaml:"failurePolicy"`
+					NamespaceSelector struct {
+						MatchExpressions []matchExpression `yaml:"matchExpressions"`
+					} `yaml:"namespaceSelector"`
+				} `yaml:"webhook"`
+			} `yaml:"injector"`
+		} `yaml:"openbao"`
+	}
+
+	baseConfig, err := os.ReadFile(baseConfigPath)
+	if err != nil {
+		t.Fatalf("read self-managed base config: %v", err)
+	}
+	if err := yaml.Unmarshal(baseConfig, &config); err != nil {
+		t.Fatalf("parse self-managed base config: %v", err)
+	}
+
+	webhook := config.OpenBao.Injector.Webhook
+	if got, want := webhook.FailurePolicy, "Fail"; got != want {
+		t.Fatalf("openbao injector failurePolicy = %q, want %q", got, want)
+	}
+	if got, want := webhook.NamespaceSelector.MatchExpressions, []matchExpression{{
+		Key:      "kubernetes.io/metadata.name",
+		Operator: "In",
+		Values:   []string{"api-keys", "ess", "nats-system", "nvcf", "sis"},
+	}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("openbao injector namespace selector = %#v, want %#v", got, want)
+	}
+
+	globalValues, err := os.ReadFile(globalValuesPath)
+	if err != nil {
+		t.Fatalf("read self-managed global values template: %v", err)
+	}
+	if !strings.Contains(string(globalValues), "with .Values.openbao.injector.webhook") {
+		t.Fatal("self-managed global values template does not forward openbao injector webhook settings")
+	}
+}
 
 // TestNVCFCLINonlocalFixtureMatchesCLITemplate asserts every top-level
 // key in tests/bdd/fixtures/nvcf-cli-nonlocal.yaml.template is also
