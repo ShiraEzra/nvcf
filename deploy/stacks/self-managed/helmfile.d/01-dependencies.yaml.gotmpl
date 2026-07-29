@@ -35,10 +35,18 @@ releases:
 
   # --- NVCF NCP Dependencies ---
   - name: nats
-    version: 0.6.1
+    version: 0.7.1
     condition: nats.enabled # From defaults.yaml or env overrides
     namespace: nats-system
     <<: *dependency # Inherits base values from the dependency template
+    values:
+      - ../global.yaml.gotmpl
+      - ../secrets/{{ requiredEnv "HELMFILE_ENV" }}-secrets.yaml
+      - nats:
+          config:
+            cluster:
+              enabled: false
+              replicas: 1
 
   - name: cert-manager
     version: 0.1.0
@@ -51,6 +59,17 @@ releases:
     condition: openbao.enabled # From defaults.yaml or env overrides
     namespace: vault-system
     <<: *dependency # Inherits base values from the dependency template
+    values:
+      - ../global.yaml.gotmpl
+      - ../secrets/{{ requiredEnv "HELMFILE_ENV" }}-secrets.yaml
+      - openbao:
+          global:
+            openshift: true
+          injector:
+            enabled: false
+          server:
+            ha:
+              replicas: 3
     needs:
       - nats-system/nats
 
@@ -59,3 +78,17 @@ releases:
     condition: cassandra.enabled # From defaults.yaml or env overrides
     namespace: cassandra-system
     <<: *dependency # Inherits base values from the dependency template
+    values:
+      - ../global.yaml.gotmpl
+      - ../secrets/{{ requiredEnv "HELMFILE_ENV" }}-secrets.yaml
+      - cassandra:
+          dynamicSeedDiscovery:
+            enabled: false
+          global:
+            compatibility:
+              openshift:
+                adaptSecurityContext: force
+          podSecurityContext:
+            enabled: false
+          containerSecurityContext:
+            enabled: false
