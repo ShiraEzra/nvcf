@@ -70,7 +70,7 @@ spec:
         - name: init-script
           configMap:
             name: cassandra-init-script # static name is intentional
-            defaultMode: 0500
+            defaultMode: 0555
 ---
 apiVersion: v1
 kind: ConfigMap
