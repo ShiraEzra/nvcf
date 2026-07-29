@@ -1,0 +1,96 @@
+global:
+  domain: "10.6.60.125:30162"
+
+  helm:
+    sources:
+      registry: quay.io
+      repository: salfasi-redhat
+
+  image:
+    registry: quay.io
+    repository: salfasi-redhat
+
+  imagePullSecrets:
+    - name: quay-pull-secret
+
+  nodeSelectors:
+    enabled: false
+
+  storageClass: "local-path"
+  storageSize: "10Gi"
+
+  observability:
+    tracing:
+      enabled: false
+
+cassandra:
+  enabled: true
+  replicaCount: 1
+  resourcesPreset: "large"
+
+nats:
+  enabled: true
+
+certManager:
+  enabled: false
+
+openbao:
+  enabled: true
+  migrations:
+    issuerDiscovery:
+      enabled: false
+  global:
+    openshift: true
+  injector:
+    replicas: 1
+    uid: 1000940000
+    gid: 1000940000
+  server:
+    uid: 1000940000
+    gid: 1000940000
+    ha:
+      replicas: 1
+
+accounts:
+  limits:
+    maxFunctions: 10
+    maxTasks: 10
+    maxTelemetries: 10
+    maxRegistryCreds: 10
+
+addons:
+  llm:
+    enabled: false
+  vanityGateway:
+    enabled: false
+
+stateMetrics:
+  enabled: false
+
+rateLimiter:
+  enabled: false
+
+ingress:
+  gatewayApi:
+    enabled: true
+    controllerNamespace: "envoy-gateway"
+    routes:
+      grpc:
+        enabled: false
+      grpcWorker:
+        enabled: false
+      nats:
+        enabled: false
+    gateways:
+      shared:
+        name: "nvcf-gateway"
+        namespace: "envoy-gateway"
+        listenerName: http
+      grpc:
+        name: "nvcf-gateway"
+        namespace: "envoy-gateway"
+        listenerName: http
+      nats:
+        name: "nvcf-gateway"
+        namespace: "envoy-gateway"
+        listenerName: http
