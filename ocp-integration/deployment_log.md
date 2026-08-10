@@ -135,13 +135,153 @@ OCP issues encountered and decisions:
 - Final configuration: seed discovery disabled, all security contexts disabled (OCP assigns UIDs), adaptSecurityContext: force, patched defaultMode 0555, 1 replica
 - Status: Done (1/1 pod running, init-cluster completed, migrations completed)
 
-### Phase 2: Core NVCF services (~12 services)
+### Phase 2: Core NVCF services (11 active, 4 disabled)
 
-These ARE NVCF -- the API, invocation routing, key management, etc. They deploy as one group once Phase 1 is healthy. Mostly stateless deployments (no PVs), so fewer OCP issues expected.
+These ARE NVCF -- the API, invocation routing, key management, etc. They deploy as one group once Phase 1 is healthy. All are stateless deployments (no PVs needed). Deployed via: `helmfile sync --selector release-group=services`
 
-Services include: nvcf-api (core API), api-keys (key management), sis (system integration), ess-api (execution space), invocation-service (request routing), grpc-proxy (gRPC support), notary-service (image verification), reval (re-evaluation), nvct-api (task control), nats-auth-callout (NATS authentication), admin-issuer-proxy (admin auth).
+Helmfile layer: `02-core.yaml.gotmpl`. Contains 15 releases total. 4 are disabled by conditions in the OCP environment. The remaining 11 deploy across 5 namespaces (nvcf, api-keys, ess, sis, nats-system).
 
-- Status: Pending (depends on Phase 1)
+#### All 15 releases in the helmfile
+
+| # | Release | Chart | Version | Namespace | Condition | Status in OCP |
+|---|---------|-------|---------|-----------|-----------|---------------|
+| 1 | api-keys | helm-nvcf-api-keys | 1.5.1 | api-keys | (always) | Active |
+| 2 | sis | helm-nvcf-sis | 1.17.0 | sis | (always) | Active |
+| 3 | api | helm-nvcf-api | 1.23.6 | nvcf | (always) | Active |
+| 4 | nvct-api | helm-nvcf-nvct-api | 1.4.2 | nvcf | (always) | Active |
+| 5 | invocation-service | helm-nvcf-invocation-service | 1.5.4 | nvcf | (always) | Active |
+| 6 | grpc-proxy | helm-nvcf-grpc-proxy | 1.6.7 | nvcf | (always) | Active |
+| 7 | ratelimiter | helm-nvcf-rate-limiter | 1.0.3 | nvcf | rateLimiter.enabled | Disabled |
+| 8 | ess-api | helm-nvcf-ess-api | 1.6.1 | ess | (always) | Active |
+| 9 | notary-service | helm-nvcf-notary-service | 1.4.1 | nvcf | (always) | Active |
+| 10 | admin-issuer-proxy | helm-admin-token-issuer-proxy | 1.4.3 | api-keys | (always) | Active |
+| 11 | reval | helm-reval | 1.3.8 | nvcf | (always) | Active |
+| 12 | nats-auth-callout-service | helm-nvcf-nats-auth-callout-service | 1.1.3 | nats-system | (always) | Active |
+| 13 | llm-request-router | helm-nvcf-llm-request-router | 1.6.3 | nvcf | addons.llm.enabled | Disabled |
+| 14 | llm-api-gateway | helm-nvcf-llm-api-gateway | 1.2.0 | nvcf | addons.llm.enabled | Disabled |
+| 15 | vanity-gateway | helm-nvcf-vanity-gateway | 0.1.0-nvcf-10204.1 | nvcf | addons.vanityGateway.enabled | Disabled |
+
+Disabled releases (set in environments/ocp-nvcf.yaml): ratelimiter (not needed for PoC), llm-request-router and llm-api-gateway (LLM routing addon, not needed), vanity-gateway (custom domain routing, not needed).
+
+#### Chart source availability
+
+6 of the 11 active charts have source code in this monorepo (under deploy/helm/). These can be audited and patched locally:
+- api-keys, invocation-service, grpc-proxy, admin-issuer-proxy, reval, nats-auth-callout-service
+
+5 charts are upstream OCI-only (no source in this repo). They are pulled from the registry at install time and cannot be audited locally. Issues will be discovered at deploy time:
+- sis, api, nvct-api, ess-api, notary-service
+
+#### Pre-deployment OCP compatibility analysis
+
+Analyzed all 6 local chart templates for OCP restricted-v2 SCC compatibility. Key findings:
+
+**Charts with hardcoded UIDs (will fail restricted-v2 SCC on OCP):**
+
+1. api-keys: `runAsUser: 1000` hardcoded directly in the deployment template (line 90). Not overridable via Helm values. Must patch the template to make it values-driven, then repackage the chart.
+
+2. grpc-proxy: `runAsUser: 1000` in values.yaml. Overridable via helmfile inline values. Also has `runAsNonRoot` and `readOnlyRootFilesystem` commented out in defaults.
+
+3. admin-issuer-proxy: `runAsUser: 1000, fsGroup: 1000` in values.yaml. Best-hardened chart overall (has allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, seccompProfile: RuntimeDefault). UIDs are overridable via helmfile inline values.
+
+4. reval: `runAsUser: 65532` set in global.yaml.gotmpl (not in the chart itself). UID 65532 is the distroless nonroot user. Still a hardcoded UID that OCP may reject. Needs override.
+
+**Charts with no security context at all:**
+- invocation-service: zero securityContext in template or values. OCP will inject defaults from the SCC, which should work (restricted-v2 assigns a random UID, sets runAsNonRoot, drops capabilities). May or may not work depending on whether the image expects a specific UID.
+- nats-auth-callout-service: same as invocation-service -- no securityContext at all.
+
+**Other issues:**
+- nats-auth-callout-service: has `ingress.enabled: true` with nginx IngressClassName by default. Will create an Ingress resource that fails on OCP (no nginx ingress controller). Must disable via helmfile values.
+- invocation-service: has an Ingress template but disabled by default (`ingress.enabled: false`). No action needed.
+
+**No issues expected:**
+- No ConfigMap defaultMode issues (all use Kubernetes default 0644, unlike the 0500 problem in Phase 1)
+- No hostNetwork/hostPID/privileged in any service chart
+- No PVC/PV requirements (all stateless)
+- No init containers or Jobs in local charts (api chart may have an accountBootstrap Job, but that's upstream)
+
+**5 upstream charts (sis, api, nvct-api, ess-api, notary-service):** Cannot audit. No securityContext overrides are passed for any of them in global.yaml.gotmpl. If they have hardcoded UIDs in their templates, they will fail on OCP and need fixes at deploy time.
+
+#### Deployment approach
+
+Deploy-then-fix, iteratively. Apply known fixes first, then attempt deployment and fix whatever breaks from the upstream charts. OCP SCC violations surface immediately as pod admission failures.
+
+Steps:
+1. Patch api-keys chart template to make securityContext values-driven. Repackage and push to quay.io.
+2. Add inline OCP values overrides to 02-core.yaml.gotmpl for grpc-proxy, admin-issuer-proxy, reval, and nats-auth-callout-service.
+3. Run helmfile sync --selector release-group=services.
+4. Diagnose and fix failures from upstream charts.
+5. Verify all 11 services are running.
+
+- Status: Done
+
+#### OCP issues encountered and decisions
+
+**1. SCC / runAsUser rejection (all services):**
+
+- Problem: All NVCF service charts set `runAsUser: 1000` (or `65532` for reval and nats-auth-callout). OpenShift's restricted-v2 SCC only allows UIDs from the namespace's assigned range (e.g., 1000890000-1000899999 for the nvcf namespace). Every pod was rejected with "runAsUser: Invalid value: 1000: must be in the ranges [...]".
+- This is a systemic issue across all NVCF charts. Every chart hardcodes `runAsUser: 1000` in its values.yaml. The api-keys chart went further: it hardcoded the value directly in the deployment template, not even in values.
+- Options considered:
+  a. Grant nonroot-v2 SCC to all NVCF service accounts -- allows any non-root UID, bypasses OCP's UID assignment. Quick but not OCP-native.
+  b. Override securityContext via helmfile inline values for each release, setting `runAsUser: null` to remove the hardcoded UID and let OCP assign one. Keep `runAsNonRoot: true` and `capabilities.drop: ALL`.
+  c. Patch each chart source to remove `runAsUser` from values.yaml defaults and repackage. Most work, cleanest result.
+- Decision: Option b (helmfile inline values overrides). Added `runAsUser: null` overrides for all 10 services (invocation-service doesn't set runAsUser). For api-keys, also patched the chart template to make securityContext values-driven (it was hardcoded in the template), repackaged, and pushed to quay.io.
+- Key learning: Helm deep-merges values. Setting `runAsNonRoot: true` alone does not remove the existing `runAsUser: 1000` from the chart defaults. Must explicitly set `runAsUser: null` to remove it.
+- Services needing NET_BIND_SERVICE capability (sis, nvct-api, notary-service): kept the `add: [NET_BIND_SERVICE]` while removing runAsUser.
+- Integration proposal note: NVCF charts should not hardcode `runAsUser: 1000`. Either remove it from defaults (let the platform assign UIDs) or add an `openshift` flag that removes it, similar to what the OpenBao chart already does. Single PR could fix all charts.
+
+**2. Image tag mismatches (notary-service, nvct-api, sis):**
+
+- Problem: Three services failed with ImagePullBackOff. The chart-specified image tags don't match the tags available on NGC or quay.io:
+  - notary-service: chart expects 1.9.4, only 1.8.1 exists on NGC
+  - nvct-service-oss (nvct-api): chart expects 1.5.5, only 1.5.9-hotfix.1 exists
+  - spot (sis): chart expects 1.563.1, only 1.563.1-hotfix.1 exists
+- Not OCP-specific -- the charts reference image tags that don't exist on the selfhosted-ga NGC registry. Likely built against internal NVIDIA CI artifacts.
+- Decision: Re-tagged the available images on quay.io to match the expected tags. The images are close enough in version for a PoC.
+- Integration proposal note: NVCF selfhosted chart versions and image tags are out of sync. The charts reference image versions that are not published to NGC. This needs to be fixed for any self-hosted deployment, not just OpenShift.
+
+**3. OpenBao vault agent JWT authentication failure:**
+
+- Problem: After re-enabling the OpenBao injector, every service pod starts with a vault-agent-init container that tries to authenticate to OpenBao using the pod's Kubernetes service account token. Authentication fails with "no known key successfully validated the token signature." The vault-agent retries with exponential backoff, keeping pods stuck in Init:0/1 forever.
+- Root cause: OpenBao's JWT auth was configured during initialization with a single static public key. This OCP cluster has 4 signing keys (OCP rotates service account signing keys). Tokens signed by any of the other 3 keys are rejected.
+- On vanilla K8s, the init script fetches the cluster's JWKS public key and configures OpenBao with it. On this OCP cluster, either the init script grabbed only one of the 4 keys, or OCP rotated keys after initialization.
+- Options considered:
+  a. Add all 4 static public keys to OpenBao's `jwt_validation_pubkeys` config via `bao write auth/jwt/config`. Quick fix, but keys rotate over time and would need manual updates after each rotation. Not sustainable.
+  b. Configure OIDC discovery URL: set `oidc_discovery_url=https://kubernetes.default.svc` so OpenBao auto-fetches signing keys from the K8s API. Auto-refreshes on rotation. Attempted this, but OpenBao server gets 403 Forbidden accessing the JWKS endpoint because OCP restricts anonymous access to `/openid/v1/jwks`. Would need a ClusterRoleBinding for the server SA. Works, but bypasses the NVCF-native mechanism.
+  c. Enable NVCF's built-in `issuerDiscovery` migration: the OpenBao chart already has an `issuerDiscovery` feature (disabled by default) that configures JWT auth using OIDC discovery. The chart includes a pre-install RBAC hook that grants the migration service account access to `system:service-account-issuer-discovery` (a built-in K8s ClusterRole). On OCP, also need a ClusterRoleBinding for the OpenBao server SA so it can fetch JWKS at runtime.
+  d. Switch from JWT auth to Kubernetes auth method: OpenBao has a native `auth/kubernetes` backend that validates tokens via the K8s TokenReview API -- no key management at all. Most robust, but NVCF charts are hardcoded to use `auth/jwt` path in vault annotations. Would require changing every service chart.
+- Decision: Option c (enable issuerDiscovery). This is the NVCF-native mechanism for exactly this problem. It uses the chart's built-in OIDC discovery + migration logic, and only requires one additional ClusterRoleBinding for the OpenBao server SA (standard OCP pattern -- same thing cert-manager and RHOAI need). It handles key rotation automatically and documents a clear integration requirement.
+- Steps taken:
+  1. Created ClusterRoleBinding granting OpenBao server SA access to `system:service-account-issuer-discovery`.
+  2. Set `issuerDiscovery.enabled: true` in ocp-nvcf.yaml.
+  3. Re-ran OpenBao helm upgrade. The migration ran but fell back to the static public key -- the migration script tries anonymous JWKS fetch, which fails on OCP, and falls back to the mounted static key from the `cluster-jwt` secret.
+  4. Manually configured OIDC discovery via `bao write auth/jwt/config oidc_discovery_url=https://kubernetes.default.svc oidc_discovery_ca_pem=<ca-cert>`. But OpenBao's OIDC client fetches JWKS as an anonymous HTTP client (no bearer token), so it still got 403 Forbidden on OCP.
+  5. Created ClusterRoleBinding granting `system:unauthenticated` access to `system:service-account-issuer-discovery`. This exposes only the JWKS endpoint (public key material, not sensitive) to unauthenticated requests -- matching vanilla K8s behavior where this is the default.
+  6. Vault authentication now works. Services pass Init and start successfully.
+- Integration proposal note: On OCP, NVCF requires two RBAC changes for OpenBao JWT auth: (1) enable `issuerDiscovery` in the chart values, and (2) grant `system:unauthenticated` access to `system:service-account-issuer-discovery` so OpenBao can fetch JWKS keys. Alternatively, NVIDIA could modify the OpenBao OIDC discovery to use a service account token for JWKS fetching instead of anonymous access. On vanilla K8s, the OIDC endpoints are already accessible to unauthenticated users by default.
+
+**4. Missing vault secrets (caused by issue 3):**
+
+- Problem: Services like nats-auth-callout-service and ess-api crash with "failed to read /etc/secrets/secrets.json" because the vault-agent init container can't authenticate and therefore never writes the secrets file.
+- Not a separate issue -- it's a consequence of the JWT authentication failure (issue 3). Once vault auth is fixed, the vault-agent will inject secrets and services will start.
+
+**5. admin-issuer-proxy HTTPRoute hostname validation:**
+
+- Problem: admin-issuer-proxy chart creates an HTTPRoute with hostname `api-keys.{{ .Values.global.domain }}`. Our OCP domain is `10.6.60.125:30162` (IP + NodePort), resulting in hostname `api-keys.10.6.60.125:30162` which is invalid per the Gateway API spec (hostnames cannot contain ports).
+- Not OCP-specific -- the domain includes a port because we're using NodePort on bare-metal without a DNS name or LoadBalancer.
+- Decision: Disabled the HTTPRoute for admin-issuer-proxy via `gateway.enabled: false` in the helmfile inline values. The admin-issuer-proxy is internal-only and doesn't need external routing for the PoC.
+- Integration proposal note: For production, a proper DNS domain should be configured instead of IP:port. This would resolve the hostname validation issue for all HTTPRoutes.
+
+**6. NVCF API crash -- NATS JetStream replicas:**
+
+- Problem: nvcf-api fails to start with `JetStreamApiException: replicas > 1 not supported in non-clustered mode`. The API creates JetStream streams with multiple replicas, but NATS runs in single-node mode (clustering disabled for the 2-node cluster).
+- Not OCP-specific -- caused by running NATS without clustering.
+- Status: In progress. Need to scale NATS to 3 replicas with clustering.
+
+**Status (2026-07-30):**
+- 9 of 11 services running: api-keys, admin-issuer-proxy, ess-api, nats-auth-callout-service, notary-service, nvct-api, reval, sis
+- 2 services blocked on NATS JetStream config: api (crash), invocation-service and grpc-proxy (depend on api)
+
+- Status: In progress (fixing issue 6)
 
 ### Phase 3: Gateway routes (1 chart)
 

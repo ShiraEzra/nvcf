@@ -69,3 +69,5 @@ nvcf-grpc-proxy-go/vendor/
 nvcf-nats-auth-callout-service-go/vendor/
 otelconfig-go/vendor/
 nvcf-ratelimiter-go/vendor/
+deploy/helm/cassandra/helm/charts/
+deploy/helm/openbao/helm/charts/

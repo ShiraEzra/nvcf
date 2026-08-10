@@ -83,11 +83,10 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.apikeys.securityContext }}
           securityContext:
-            capabilities:
-              drop:
-                - ALL
-            runAsUser: 1000
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: vault-config-templates
               mountPath: /vault/config/templates

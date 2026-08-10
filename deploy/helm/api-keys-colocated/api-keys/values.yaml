@@ -65,6 +65,12 @@ apikeys:
     initialDelaySeconds: 5
     timeoutSeconds: 1
 
+  securityContext:
+    capabilities:
+      drop:
+        - ALL
+    runAsNonRoot: true
+
   resources:
     limits:
       cpu: 200m
