@@ -38,7 +38,7 @@ openbao:
   enabled: true
   migrations:
     issuerDiscovery:
-      enabled: false
+      enabled: true
   global:
     openshift: true
   injector:

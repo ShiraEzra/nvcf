@@ -45,8 +45,8 @@ releases:
       - nats:
           config:
             cluster:
-              enabled: false
-              replicas: 1
+              enabled: true
+              replicas: 3
 
   - name: cert-manager
     version: 0.1.0
@@ -66,7 +66,7 @@ releases:
           global:
             openshift: true
           injector:
-            enabled: false
+            enabled: true
           server:
             ha:
               replicas: 3

@@ -271,17 +271,48 @@ Steps:
 - Decision: Disabled the HTTPRoute for admin-issuer-proxy via `gateway.enabled: false` in the helmfile inline values. The admin-issuer-proxy is internal-only and doesn't need external routing for the PoC.
 - Integration proposal note: For production, a proper DNS domain should be configured instead of IP:port. This would resolve the hostname validation issue for all HTTPRoutes.
 
-**6. NVCF API crash -- NATS JetStream replicas:**
+**6. NATS JetStream replicas (resolved):**
 
-- Problem: nvcf-api fails to start with `JetStreamApiException: replicas > 1 not supported in non-clustered mode`. The API creates JetStream streams with multiple replicas, but NATS runs in single-node mode (clustering disabled for the 2-node cluster).
-- Not OCP-specific -- caused by running NATS without clustering.
-- Status: In progress. Need to scale NATS to 3 replicas with clustering.
+- Problem: nvcf-api fails to start with `JetStreamApiException: replicas > 1 not supported in non-clustered mode`. The API creates JetStream streams with multiple replicas for durability, but NATS was running as a single node without clustering.
+- Not OCP-specific -- caused by running NATS without clustering on our small cluster.
+- Options considered:
+  a. Override stream replicas to 1 via env var -- unknown property name (API is closed-source), attempt with `NVCF_NATS_STREAM_REPLICAS=1` didn't work due to helmfile value merging.
+  b. Enable NATS clustering with 1 replica -- NATS gets stuck "Waiting for routing to be established" because it expects cluster peers that don't exist.
+  c. Scale NATS to 3 replicas with clustering enabled -- same pattern as OpenBao (3 replicas across 2 nodes). Matches what NVCF expects.
+- Decision: Option c (3 replicas). Created 2 additional PVs (1 on worker, 1 on control-plane), set `cluster.enabled: true, replicas: 3`.
+- Additional issue after enabling clustering: API failed with `no suitable peers for placement`. The API requests streams with a placement tag `dc` (`NVCF_NATS_REGION_PLACEMENT_TAG: "dc"`) and NATS nodes have `server_tags: ["dc:ncp"]` in the chart defaults, but the running pods hadn't picked up the tag. A `kubectl rollout restart` of the NATS StatefulSet resolved it.
 
-**Status (2026-07-30):**
-- 9 of 11 services running: api-keys, admin-issuer-proxy, ess-api, nats-auth-callout-service, notary-service, nvct-api, reval, sis
-- 2 services blocked on NATS JetStream config: api (crash), invocation-service and grpc-proxy (depend on api)
+**7. Image tag mismatches (additional, resolved):**
 
-- Status: In progress (fixing issue 6)
+- Two more images needed re-tagging on quay.io when deploying invocation-service and api-keys:
+  - nvcf-invocation-service: chart expects 0.5.2, available 0.8.5
+  - nvcf-api-keys-service: chart expects 1.2.14, available 1.5.0
+- Same issue as finding #2 -- chart-specified image tags don't match what's published on NGC.
+
+**8. Account bootstrap job failure (non-blocking):**
+
+- Problem: The api chart includes a helm hook Job (`nvcf-api-account-bootstrap`) that creates the initial NVCF account. It fails with HTTP 400: "CONTAINER registry with hostname quay.io is not yet recognized." The API only recognizes nvcr.io as a container registry.
+- Not OCP-specific -- caused by using quay.io instead of nvcr.io for container images.
+- Non-blocking for the PoC. All 11 services run without it. Will need to be addressed when deploying functions (NVIDIA-1043).
+
+**Final status (2026-08-05):**
+All 11 Phase 2 core services running on OpenShift:
+
+| # | Service | Namespace | Pods | Status |
+|---|---------|-----------|------|--------|
+| 1 | api-keys | api-keys | 2/2 | Running |
+| 2 | admin-token-issuer-proxy | api-keys | 2/2 | Running |
+| 3 | ess-api | ess | 2/2 | Running |
+| 4 | nats-auth-callout-service | nats-system | 2/2 | Running |
+| 5 | nvcf-api | nvcf | 2/2 | Running |
+| 6 | invocation-service | nvcf | 2/2 | Running |
+| 7 | grpc-proxy | nvcf | 2/2 | Running |
+| 8 | notary-service | nvcf | 2/2 | Running |
+| 9 | nvct-api | nvcf | 2/2 | Running |
+| 10 | reval | nvcf | 1/1 | Running |
+| 11 | spot-instance-service (sis) | sis | 2/2 | Running |
+
+- Status: Done
 
 ### Phase 3: Gateway routes (1 chart)
 

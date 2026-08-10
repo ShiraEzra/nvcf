@@ -32,32 +32,71 @@ templates:
 releases:
 
   # --- NVCF Services ---
+  # OCP: securityContext overrides null out hardcoded runAsUser values that conflict
+  # with OpenShift's restricted-v2 SCC. OCP assigns UIDs from the namespace range.
+  # Helm deep-merges values, so runAsUser must be explicitly set to null to remove it.
   - name: api-keys
     version: 1.5.1
     namespace: api-keys
     inherit:
       - template: service
+    values:
+      - apikeys:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: null
 
   - name: sis
     version: 1.17.0
     namespace: sis
     inherit:
       - template: service
+    values:
+      - sis:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+            runAsNonRoot: true
+            runAsUser: null
 
   - name: api
     version: 1.23.6
     namespace: nvcf
     inherit:
       - template: service
+    values:
+      - api:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: null
     needs:
       # not needed to start, but needed for bootstrapping account which is done with a script in the api helm chart
       - ess/ess-api
-                      
+
   - name: nvct-api
     version: 1.4.2
     namespace: nvcf
     inherit:
       - template: service
+    values:
+      - nvctApi:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+            runAsNonRoot: true
+            runAsUser: null
 
   - name: invocation-service
     version: 1.5.4
@@ -72,6 +111,14 @@ releases:
     namespace: nvcf
     inherit:
       - template: service
+    values:
+      - grpcproxy:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: null
     needs:
       - nvcf/api
 
@@ -92,12 +139,30 @@ releases:
     namespace: ess
     inherit:
       - template: service
+    values:
+      - ess:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: null
 
   - name: notary-service
     version: 1.4.1
     namespace: nvcf
     inherit:
       - template: service
+    values:
+      - notary:
+          securityContext:
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+            runAsNonRoot: true
+            runAsUser: null
 
   - name: admin-issuer-proxy
     chart: nvcf/helm-admin-token-issuer-proxy
@@ -105,6 +170,23 @@ releases:
     namespace: api-keys
     values:
       - ../global.yaml.gotmpl
+      - adminIssuerProxy:
+          podSecurityContext:
+            runAsNonRoot: true
+            runAsUser: null
+            fsGroup: null
+            seccompProfile:
+              type: RuntimeDefault
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: null
+          gateway:
+            enabled: false
     # Finding #22 (E2E 2026-04-20): admin-issuer-proxy was not installed by
     # the first make install. helmfile list showed INSTALLED=true but
     # helm list -A confirmed no release existed.
@@ -137,6 +219,10 @@ releases:
     namespace: nvcf
     values:
       - ../global.yaml.gotmpl
+      - reval:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: null
     labels:
       release-group: services
 
@@ -150,6 +236,16 @@ releases:
       - imagePullSecrets:
           {{- toYaml .Values.global.imagePullSecrets | nindent 10 }}
       {{- end }}
+      - natsAuthCalloutService:
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: null
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+        ingress:
+          enabled: false
     labels:
       release-group: services
 
