@@ -295,5 +295,9 @@ releases:
     condition: ingress.gatewayApi.enabled
     values:
       - ../global.yaml.gotmpl
+      - nvcfGatewayRoutes:
+          routes:
+            grpc:
+              enabled: false
     labels:
       release-group: ingress

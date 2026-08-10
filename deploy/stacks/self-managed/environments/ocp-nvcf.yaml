@@ -1,5 +1,5 @@
 global:
-  domain: "10.6.60.125:30162"
+  domain: "10.6.60.125"
 
   helm:
     sources:

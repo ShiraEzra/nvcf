@@ -316,9 +316,30 @@ All 11 Phase 2 core services running on OpenShift:
 
 ### Phase 3: Gateway routes (1 chart)
 
-HTTPRoute definitions that connect the OSSM Gateway to the core services. This is what makes NVCF accessible from outside the cluster.
+HTTPRoute definitions that connect the OSSM Gateway to the core services. This is what makes NVCF accessible from outside the cluster. Deployed via: `helmfile sync --selector release-group=ingress`
 
-- Status: Pending (depends on Phase 2)
+OCP issues encountered and decisions:
+
+**1. Domain format (resolved):**
+
+- Problem: `global.domain` was set to `10.6.60.125:30162` (IP + NodePort). The gateway-routes chart uses this to build HTTPRoute hostnames like `api.10.6.60.125:30162`, which is invalid per the Gateway API spec (hostnames cannot contain ports).
+- Decision: Changed domain to `10.6.60.125` (without port). The port is handled by the Gateway's NodePort listener, not the hostname. Clients access via `http://10.6.60.125:30162` with the appropriate Host header.
+
+**2. gRPC TCPRoute CRD missing (resolved):**
+
+- Problem: The gateway-routes chart includes a TCPRoute template for gRPC traffic, gated by `nvcfGatewayRoutes.routes.grpc.enabled` (defaults to `true`). Our OCP environment sets `ingress.gatewayApi.routes.grpc.enabled: false`, but `global.yaml.gotmpl` has a gap -- it passes through `grpcWorker.enabled` and `nats.enabled` but not `grpc.enabled`. The chart never sees our `false` and tries to render a TCPRoute, which fails because OCP doesn't have the TCPRoute CRD (experimental Gateway API, blocked by OCP Ingress Operator).
+- Decision: Added inline value override in the ingress release to set `nvcfGatewayRoutes.routes.grpc.enabled: false`. Same pattern as the securityContext overrides.
+- Integration proposal note: `global.yaml.gotmpl` should pass through `grpc.enabled` to the gateway-routes chart, same as it does for `grpcWorker` and `nats`.
+
+**Result:**
+
+7 HTTPRoutes created: nvcf-api, api-keys, invocation-service, sis, nvct-api, reval, llm-api-gateway.
+
+API connectivity verified:
+- `curl -H "Host: api.10.6.60.125" http://10.6.60.125:30162/health` returns `{"status":"UP"}`
+- Authenticated endpoints return 401 (expected -- needs NVCF account setup)
+
+- Status: Done
 
 ## Step 6: Register GPU cluster and install NVCA operator
 - Platform: All platforms
