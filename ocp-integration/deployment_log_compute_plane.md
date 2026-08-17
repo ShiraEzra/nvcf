@@ -301,13 +301,45 @@ Event: "ClusterAgent health changed from '' to 'healthy'"
 - Polling for work on JetStream queues (CreateNvcaFunctionTaskStream, TerminateNvcaStream)
 - JetStream "stream not found" errors are expected -- streams are created when functions are deployed via the NVCF API
 
-The agent is ready to receive function deployment requests from the control plane.
+- Status: Initially appeared done, but see Step 8.
 
-- Status: Done
+## Step 8: Stabilize NVCA agent (JetStream streams)
+
+- Platform: All platforms (not OCP-specific)
+- Dependency: This step was identified 5 days after Step 7, when the agent had accumulated ~1400 restarts.
+
+**Problem:** The NVCA agent's /livez liveness probe checks NATS queue health. Two JetStream streams (CreateNvcaFunctionTaskStream, TerminateNvcaStream) are normally created by the control plane when a function is deployed via the NVCF API. On a fresh deployment with no functions, these streams don't exist. The agent initially appears healthy (the liveness probe has a 155-second grace period: 5s initial + 30 failures * 5s period), but once the grace period expires and the QueueManager health check reports the streams as missing, /livez starts returning 503. Kubernetes kills the pod, it restarts, and the cycle repeats.
+
+This is not OCP-specific. Any fresh NVCF deployment without a deployed function will hit this crash-loop.
+
+The NVCF docs (docs/user/cluster-management/self-managed.md, "Verify Workload Scheduling" section) describe deploying a test function (load_tester_supreme:0.0.8) immediately after install. This creates the streams naturally. We missed this step during the initial deployment.
+
+**Investigation:** Attempted to deploy the test function via the API to create the streams naturally. Failed with HTTP 400: "Unsupported registry hostname quay.io for registry type CONTAINER." The NVCF API only accepts function images from recognized registries (NGC, ECR, ACR, VolcEngine, JFrog, Harbor). Since we can't push images to nvcr.io (read-only access) and quay.io is not recognized, we cannot deploy a function through the API at this time. This registry limitation is a blocking issue for NVIDIA-1043.
+
+**Options considered:**
+  a. Deploy the test function from a recognized registry -- blocked by the registry limitation above.
+  b. Create the JetStream streams manually in NATS -- workaround that stabilizes the agent without deploying a function.
+  c. Modify the liveness probe to tolerate missing streams -- requires patching the operator code or the agent deployment, too invasive.
+
+**Decision:** Option b. Created both streams manually via nats-box:
+```
+oc exec -n nats-system deployment/nats-box -- nats stream add CreateNvcaFunctionTaskStream \
+  --subjects "Create.NVCA.>" --retention limits --max-age=24h --storage file --replicas 3
+oc exec -n nats-system deployment/nats-box -- nats stream add TerminateNvcaStream \
+  --subjects "Terminate.NVCA.>" --retention limits --max-age=24h --storage file --replicas 3
+```
+
+Agent stabilized on the next restart cycle -- Running 2/2, NVCFBackend health: healthy, ICMS registration successful.
+
+**Integration proposal notes:**
+- The NVCA agent's liveness probe should tolerate missing JetStream streams on a fresh deployment. The "stream not found" state should not be treated as unhealthy -- it simply means no functions have been deployed yet.
+- The function image registry limitation (quay.io not recognized) is a separate issue documented in Step 1, but it also blocks the standard post-install verification flow. For OpenShift deployments using quay.io, NVCF needs to either add quay.io to the recognized registries or provide a mechanism to register custom registries.
+
+- Status: Done (workaround)
 
 ## Final status
 
-All 7 acceptance criteria for NVIDIA-1080 are complete. The compute plane is deployed and healthy on OpenShift.
+All 8 acceptance criteria for NVIDIA-1080 are complete. The compute plane is deployed and stable on OpenShift.
 
 **Pod summary:**
 
@@ -324,7 +356,10 @@ All 7 acceptance criteria for NVIDIA-1080 are complete. The compute plane is dep
 | 2 | admin-issuer-proxy not routable through gateway | Partially (IP:port hostname) | Port-forward workaround | Separate host header per service in CLI |
 | 3 | CLI sends ICMS requests with wrong Host header | Partially (hostname-based routing) | Port-forward to SIS directly | Add sis_host config to CLI |
 | 4 | NVCA agent pod rejected by SCC | Yes | Grant nonroot-v2 SCC to agent SA | Extend chart SCC RBAC to agent namespace |
+| 5 | Agent crash-loops without deployed functions | No | Create JetStream streams manually | Liveness probe should tolerate missing streams |
 
 Issues 2 and 3 are related to the same root cause: hostname-based gateway routing with IP:port instead of DNS. A proper DNS domain would resolve both.
+
+**Blocking issue for NVIDIA-1043:** The NVCF API rejects function images from quay.io. We can't push to nvcr.io. Need to resolve the function image registry question before deploying TinyLlama.
 
 **Next task:** NVIDIA-1043 -- Deploy TinyLlama via NVCF to validate end-to-end function deployment on the compute plane.
